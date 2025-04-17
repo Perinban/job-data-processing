@@ -1,0 +1,6 @@
+supabase
+google-api-python-client
+gdown
+pandas
+tqdm
+python-dateutil
