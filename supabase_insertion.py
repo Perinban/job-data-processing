@@ -2,6 +2,7 @@
 from supabase import create_client
 from tqdm import tqdm
 import pandas as pd
+import os
 
 # Supabase configuration
 def create_supabase_client():
