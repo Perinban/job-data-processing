@@ -1,37 +1,188 @@
-name: Cron Job for Job Data Processing
+name: Import Job Data to TalentBliss
 
 on:
+  pull_request:
+  push:
+    branches:
+      - main
   schedule:
-    - cron: '0 6 * * *'  # This will run the job daily at midnight UTC
-  workflow_dispatch:  # Allows manual triggering of the workflow from GitHub UI
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      confirm_import:
+        description: "Run the full Oracle import after tests pass"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  run-cron-job:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-    - name: Checkout the repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
-    - name: Run the script
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        RECRUITER_ID : ${{ secrets.RECRUITER_ID }}
-      run: |
-        python main.py
+      - name: Validate installation
+        run: python -m pip check
 
-    - name: Post execution status
-      run: echo "Job execution completed."
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Check CLI help
+        run: python main.py --help
+
+  import-jobs:
+    needs: test
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.confirm_import == 'true') ||
+      (github.event_name == 'schedule' && vars.ENABLE_ORACLE_IMPORT == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: talentbliss-job-import
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Validate import configuration
+        shell: bash
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          PIPELINE_IMPORT_TOKEN: ${{ secrets.PIPELINE_IMPORT_TOKEN }}
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          USE_ORACLE_SSH_TUNNEL: ${{ vars.USE_ORACLE_SSH_TUNNEL }}
+          ORACLE_HOST: ${{ vars.ORACLE_HOST }}
+          ORACLE_USER: ${{ vars.ORACLE_USER }}
+          ORACLE_STAGING_PORT: ${{ vars.ORACLE_STAGING_PORT }}
+          TALENTBLISS_API_URL: ${{ vars.TALENTBLISS_API_URL }}
+          MIN_JOB_COUNT: ${{ vars.MIN_JOB_COUNT }}
+        run: |
+          set -euo pipefail
+          for name in GOOGLE_API_KEY GDRIVE_FOLDER_ID PIPELINE_IMPORT_TOKEN MIN_JOB_COUNT; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::${name} is not configured"
+              exit 1
+            fi
+          done
+          if ! [[ "$MIN_JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::MIN_JOB_COUNT must be a positive integer"
+            exit 1
+          fi
+          if [[ "$USE_ORACLE_SSH_TUNNEL" == "true" ]]; then
+            for name in ORACLE_SSH_PRIVATE_KEY DEPLOY_KNOWN_HOSTS ORACLE_HOST ORACLE_USER ORACLE_STAGING_PORT; do
+              if [[ -z "${!name:-}" ]]; then
+                echo "::error::${name} is not configured"
+                exit 1
+              fi
+            done
+          elif [[ -z "$TALENTBLISS_API_URL" ]]; then
+            echo "::error::TALENTBLISS_API_URL is required when the SSH tunnel is disabled"
+            exit 1
+          fi
+
+      - name: Configure SSH tunnel
+        if: ${{ vars.USE_ORACLE_SSH_TUNNEL == 'true' }}
+        shell: bash
+        env:
+          ORACLE_HOST: ${{ vars.ORACLE_HOST }}
+          ORACLE_USER: ${{ vars.ORACLE_USER }}
+          ORACLE_STAGING_PORT: ${{ vars.ORACLE_STAGING_PORT }}
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle_key
+          chmod 600 ~/.ssh/oracle_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/oracle_key > ~/.ssh/oracle_key.pub
+          ssh -N \
+            -i ~/.ssh/oracle_key \
+            -o BatchMode=yes \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o StrictHostKeyChecking=yes \
+            -L "43100:127.0.0.1:${ORACLE_STAGING_PORT}" \
+            "${ORACLE_USER}@${ORACLE_HOST}" &
+          echo $! > ~/.ssh/oracle_tunnel.pid
+          echo "TALENTBLISS_API_URL=http://127.0.0.1:43100" >> "$GITHUB_ENV"
+
+      - name: Configure direct API URL
+        if: ${{ vars.USE_ORACLE_SSH_TUNNEL != 'true' }}
+        env:
+          TALENTBLISS_API_URL_VALUE: ${{ vars.TALENTBLISS_API_URL }}
+        run: echo "TALENTBLISS_API_URL=${TALENTBLISS_API_URL_VALUE}" >> "$GITHUB_ENV"
+
+      - name: Wait for TalentBliss API health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..18}; do
+            if python -c 'import os, requests; response = requests.get(os.environ["TALENTBLISS_API_URL"].rstrip("/") + "/api/health", timeout=10); response.raise_for_status(); raise SystemExit(0 if response.json().get("status") == "ok" else 1)'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::TalentBliss API health check did not become ready"
+          exit 1
+
+      - name: Import latest Google Drive feed
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_FILE_NAME: job_summary.json
+          PIPELINE_IMPORT_TOKEN: ${{ secrets.PIPELINE_IMPORT_TOKEN }}
+          TALENTBLISS_SOURCE: join
+          MIN_JOB_COUNT: ${{ vars.MIN_JOB_COUNT }}
+          MAX_FEED_AGE_HOURS: "36"
+          IMPORT_TIMEOUT_SECONDS: "600"
+          IMPORT_BATCH_SIZE: "250"
+          IMPORT_BATCH_MAX_BYTES: "8388608"
+          IMPORT_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python main.py
+
+      - name: Stop SSH tunnel
+        if: ${{ always() && vars.USE_ORACLE_SSH_TUNNEL == 'true' }}
+        shell: bash
+        run: |
+          if [[ -f ~/.ssh/oracle_tunnel.pid ]]; then
+            kill "$(cat ~/.ssh/oracle_tunnel.pid)" 2>/dev/null || true
+          fi

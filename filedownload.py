@@ -1,49 +1,106 @@
-# filedownload.py
-import json
+from __future__ import annotations
+
+import hashlib
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 import gdown
 from googleapiclient.discovery import build
-import os
 
-API_KEY = os.environ.get("GOOGLE_API_KEY")
-folder_id = os.environ.get("GDRIVE_FOLDER_ID")
 
-# Authenticate with Google Drive API
-def authenticate_drive():
-    service = build('drive', 'v3', developerKey=API_KEY)
-    return service
+def _required_environment(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise ValueError(f"{name} environment variable is required")
+    return value
 
-# Get the file ID of the latest uploaded file in the folder
-def get_file_id(folder_id):
-    service = authenticate_drive()
 
-    # Query to list files in the folder
-    results = service.files().list(q=f"'{folder_id}' in parents", fields="files(id, name)").execute()
-    items = results.get('files', [])
+def find_latest_job_file() -> dict[str, Any]:
+    api_key = _required_environment("GOOGLE_API_KEY")
+    folder_id = _required_environment("GDRIVE_FOLDER_ID")
+    file_name = os.getenv("GDRIVE_FILE_NAME", "job_summary.json").strip() or "job_summary.json"
 
-    if not items:
-        print('No files found in the folder.')
-        return None
-    else:
-        file_id = items[0]['id']
-        file_name = items[0]['name']
-        print(f"File name: {file_name}, File ID: {file_id}")
-        return file_id
+    service = build("drive", "v3", developerKey=api_key, cache_discovery=False)
+    escaped_name = file_name.replace("'", "\\'")
+    query = f"name='{escaped_name}' and '{folder_id}' in parents and trashed=false"
+    result = (
+        service.files()
+        .list(
+            q=query,
+            orderBy="modifiedTime desc",
+            pageSize=1,
+            fields="files(id,name,modifiedTime,size,md5Checksum)",
+        )
+        .execute()
+    )
+    files = result.get("files", [])
+    if not files:
+        raise FileNotFoundError(f"No {file_name} file found in the configured Google Drive folder")
+    return files[0]
 
-# Function to download and load job data from Google Drive
-def download_and_load_job_data():
-    file_id = get_file_id(folder_id)
-    if file_id:
-        output_file = "job_data.json"
 
-        # Download the file using gdown
-        gdown.download(f"https://drive.google.com/uc?id={file_id}", output_file, quiet=False)
+def validate_feed_freshness(metadata: dict[str, Any], max_age_hours: float) -> None:
+    if max_age_hours <= 0:
+        raise ValueError("max_age_hours must be greater than zero")
+    modified_time = str(metadata.get("modifiedTime", "")).strip()
+    if not modified_time:
+        raise ValueError("Google Drive metadata did not include modifiedTime")
+    modified = datetime.fromisoformat(modified_time.replace("Z", "+00:00"))
+    if modified.tzinfo is None:
+        modified = modified.replace(tzinfo=timezone.utc)
+    age_hours = (datetime.now(timezone.utc) - modified.astimezone(timezone.utc)).total_seconds() / 3600
+    if age_hours < -1:
+        raise ValueError(f"Google Drive feed modifiedTime is unexpectedly in the future: {modified_time}")
+    if age_hours > max_age_hours:
+        raise ValueError(
+            f"Refusing stale Google Drive feed: modified {age_hours:.1f} hours ago; maximum is {max_age_hours:.1f}"
+        )
 
-        # Load JSON data
-        try:
-            with open(output_file, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-            print("Job data loaded successfully!")
-            return raw_data
-        except json.JSONDecodeError:
-            print("Error: The file is not in JSON format or is corrupted.")
-            return None
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_latest_job_file(
+    output_file: str | Path = "job_data.json",
+    *,
+    max_age_hours: float | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    metadata = find_latest_job_file()
+    if max_age_hours is not None:
+        validate_feed_freshness(metadata, max_age_hours)
+
+    destination = Path(output_file).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    temporary.unlink(missing_ok=True)
+
+    try:
+        downloaded = gdown.download(id=metadata["id"], output=str(temporary), quiet=False)
+        if not downloaded or not temporary.is_file() or temporary.stat().st_size == 0:
+            raise RuntimeError("Google Drive download did not produce a valid file")
+
+        expected_size = metadata.get("size")
+        if expected_size and temporary.stat().st_size != int(expected_size):
+            raise RuntimeError(
+                f"Downloaded file size mismatch: got {temporary.stat().st_size}, expected {expected_size}"
+            )
+
+        expected_md5 = str(metadata.get("md5Checksum", "")).strip().lower()
+        if expected_md5:
+            actual_md5 = _md5(temporary)
+            if actual_md5 != expected_md5:
+                raise RuntimeError(f"Downloaded file checksum mismatch: got {actual_md5}, expected {expected_md5}")
+
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    return destination, metadata
