@@ -48,7 +48,8 @@ class RecordingSession:
             return response(
                 {
                     "idempotent": False,
-                    "closed_count": 3,
+                    "deleted_count": 3,
+                    "deleted_company_count": 1,
                     "run": {"discovered_count": 2, "inserted_count": 2, "updated_count": 0},
                 }
             )

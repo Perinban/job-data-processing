@@ -6,7 +6,7 @@ This repository is the final stage of the existing TalentBliss job pipeline:
 2. `Perinban/WebScrapJobs` scrapes JOIN jobs, combines `job_summary.json`, and uploads it to Google Drive.
 3. This repository downloads the latest Drive feed, validates it, removes scraper failures and duplicate URLs, then imports the complete validated feed through the TalentBliss Oracle API.
 
-The TalentBliss API performs the PostgreSQL transaction, company upserts, job upserts, idempotency checks, and closure of jobs missing from a successfully finalized complete feed. This repository does not truncate tables, write directly to PostgreSQL, or use Supabase at runtime.
+The TalentBliss API performs the PostgreSQL transaction, company upserts, job upserts, idempotency checks, deletion of jobs missing from a successfully finalized complete feed, and cleanup of imported companies that no longer have jobs. This repository does not truncate tables, write directly to PostgreSQL, or use Supabase at runtime.
 
 ## Safety behavior
 
@@ -21,7 +21,7 @@ The loader fails before finalization when:
 - any API batch fails or returns inconsistent counts; or
 - finalization does not acknowledge the complete job count.
 
-Jobs missing from the new feed are only closed by the TalentBliss finalize endpoint after every expected batch has completed. A partial upload cannot finalize and therefore cannot close the existing job set.
+Jobs missing from the new feed are only deleted by the TalentBliss finalize endpoint after every expected batch has completed. A partial upload cannot finalize and therefore cannot delete the existing job set.
 
 ## Required GitHub configuration
 
@@ -51,7 +51,7 @@ ORACLE_STAGING_PORT=3100
 MIN_JOB_COUNT=1000
 ```
 
-Keep `ENABLE_ORACLE_IMPORT=false` until a fresh database backup has been validated and one confirmed `workflow_dispatch` import has succeeded. For a future public API route, set `USE_ORACLE_SSH_TUNNEL=false` and configure `TALENTBLISS_API_URL` instead.
+Keep `ENABLE_ORACLE_IMPORT=false` until one confirmed `workflow_dispatch` import has succeeded. For a future public API route, set `USE_ORACLE_SSH_TUNNEL=false` and configure `TALENTBLISS_API_URL` instead.
 
 ## Schedule
 
