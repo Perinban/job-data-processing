@@ -1,6 +1,3 @@
-supabase
-google-api-python-client
-gdown
-pandas
-tqdm
-python-dateutil
+gdown>=5.2,<6
+google-api-python-client>=2.170,<3
+requests>=2.32,<3
