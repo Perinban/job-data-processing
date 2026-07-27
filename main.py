@@ -186,12 +186,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     run = result.get("run", {})
     logger.info(
-        "Oracle import finalized: batches=%s discovered=%s inserted=%s updated=%s closed=%s%s",
+        "Oracle import finalized: batches=%s discovered=%s inserted=%s updated=%s deleted=%s deleted_companies=%s%s",
         result.get("batch_count", "?"),
         run.get("discovered_count", "?"),
         run.get("inserted_count", "?"),
         run.get("updated_count", "?"),
-        result.get("closed_count", "?"),
+        result.get("deleted_count", "?"),
+        result.get("deleted_company_count", "?"),
         " idempotent=true" if result.get("idempotent") else "",
     )
     return 0
