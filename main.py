@@ -64,13 +64,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--run-id",
-        default=os.getenv("IMPORT_RUN_ID", "").strip() or os.getenv("GITHUB_RUN_ID", "").strip(),
-        help="Stable external import run ID.",
+        default=os.getenv("IMPORT_RUN_ID", "").strip(),
+        help="Stable external import run ID. Downloaded Drive feeds derive this from file identity.",
     )
     parser.add_argument(
         "--run-attempt",
-        default=os.getenv("GITHUB_RUN_ATTEMPT", "1"),
-        help="External import run attempt.",
+        default=os.getenv("IMPORT_RUN_ATTEMPT", "1"),
+        help="Stable import attempt identifier used to resume completed batches.",
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -83,6 +83,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=_integer_environment("IMPORT_BATCH_TARGET_BYTES", 20 * 1024 * 1024),
         help="Target uncompressed JSON bytes per API request; the complete feed is always processed.",
+    )
+    parser.add_argument(
+        "--batch-max-jobs",
+        type=int,
+        default=_integer_environment("IMPORT_BATCH_MAX_JOBS", 5_000),
+        help="Maximum jobs in one API request, matching the TalentBliss batch endpoint contract.",
+    )
+    parser.add_argument(
+        "--batch-retry-attempts",
+        type=int,
+        default=_integer_environment("IMPORT_BATCH_RETRY_ATTEMPTS", 8),
+        help="Retry attempts for transient failures of each queued batch and finalization.",
     )
     return parser
 
@@ -151,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_attempt=args.run_attempt,
         timeout=args.timeout_seconds,
         batch_target_bytes=args.batch_target_bytes,
+        batch_max_jobs=args.batch_max_jobs,
+        batch_retry_attempts=args.batch_retry_attempts,
     )
     run = result.get("run", {})
     logger.info(

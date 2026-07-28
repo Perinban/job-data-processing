@@ -21,7 +21,7 @@ The loader fails before finalization when:
 
 Jobs missing from the new feed are only deleted by the TalentBliss finalize endpoint after every expected batch has completed. A partial upload cannot finalize and therefore cannot delete the existing job set.
 
-Imports are grouped by a byte target rather than a fixed job-count cap, reducing API round trips while still processing the entire feed. An unusually large individual job is sent in its own request instead of being rejected.
+Imports flow through a producer-consumer queue. Each API request respects the server contract of at most 5,000 jobs and a byte target, but there is no limit on the total feed. Transient batch failures are retried independently, and downloaded Drive feeds use a stable file-derived run identity so reruns can reuse completed server-side batches instead of restarting the import.
 
 ## Required GitHub configuration
 
@@ -75,4 +75,4 @@ python main.py --help
 JOB_DATA_FILE=/path/to/job_summary.json DRY_RUN=true python main.py
 ```
 
-A local non-dry import also requires a stable `IMPORT_RUN_ID`, `TALENTBLISS_API_URL`, and `PIPELINE_IMPORT_TOKEN`.
+A local non-dry import also requires a stable `IMPORT_RUN_ID`, `TALENTBLISS_API_URL`, and `PIPELINE_IMPORT_TOKEN`. Google Drive imports derive the run ID from the Drive file ID and modification timestamp automatically.
