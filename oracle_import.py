@@ -103,17 +103,7 @@ def _json_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def prepare_jobs(
-    records: Iterable[Any],
-    *,
-    min_job_count: int = 1_000,
-    max_job_count: int = 100_000,
-) -> tuple[list[dict[str, Any]], FeedReport]:
-    if min_job_count < 1:
-        raise ValueError("min_job_count must be at least 1")
-    if max_job_count < min_job_count:
-        raise ValueError("max_job_count must be greater than or equal to min_job_count")
-
+def prepare_jobs(records: Iterable[Any]) -> tuple[list[dict[str, Any]], FeedReport]:
     rows = list(records)
     reasons: Counter[str] = Counter()
     by_url: dict[str, dict[str, Any]] = {}
@@ -131,15 +121,6 @@ def prepare_jobs(
         by_url[job_url] = job
 
     jobs = [by_url[url] for url in sorted(by_url)]
-    if len(jobs) < min_job_count:
-        raise ValueError(
-            f"Refusing incomplete feed: {len(jobs)} valid unique jobs; minimum is {min_job_count}"
-        )
-    if len(jobs) > max_job_count:
-        raise ValueError(
-            f"Refusing oversized feed: {len(jobs)} jobs; maximum is {max_job_count}"
-        )
-
     normalized_bytes = len(_json_bytes(jobs))
     report = FeedReport(
         total_records=len(rows),

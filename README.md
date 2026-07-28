@@ -14,8 +14,6 @@ The loader fails before finalization when:
 
 - the Drive feed cannot be found or downloaded;
 - the downloaded size or checksum does not match Drive metadata;
-- the Drive feed is older than `MAX_FEED_AGE_HOURS`;
-- valid unique jobs are below `MIN_JOB_COUNT` or above `MAX_JOB_COUNT`;
 - the TalentBliss health endpoint is unavailable or not healthy;
 - the import token or API URL is missing;
 - any API batch fails or returns inconsistent counts; or
@@ -48,7 +46,6 @@ USE_ORACLE_SSH_TUNNEL=true
 ORACLE_HOST=80.225.207.43
 ORACLE_USER=ubuntu
 ORACLE_STAGING_PORT=3100
-MIN_JOB_COUNT=1000
 ```
 
 Keep `ENABLE_ORACLE_IMPORT=false` until one confirmed `workflow_dispatch` import has succeeded. For a future public API route, set `USE_ORACLE_SSH_TUNNEL=false` and configure `TALENTBLISS_API_URL` instead.
@@ -73,7 +70,7 @@ python -m pip check
 python -m unittest discover -s tests -v
 python -m compileall -q .
 python main.py --help
-JOB_DATA_FILE=/path/to/job_summary.json MIN_JOB_COUNT=1000 DRY_RUN=true python main.py
+JOB_DATA_FILE=/path/to/job_summary.json DRY_RUN=true python main.py
 ```
 
 A local non-dry import also requires a stable `IMPORT_RUN_ID`, `TALENTBLISS_API_URL`, and `PIPELINE_IMPORT_TOKEN`.

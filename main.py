@@ -47,24 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Destination for the downloaded Google Drive feed.",
     )
     parser.add_argument(
-        "--min-job-count",
-        type=int,
-        default=_integer_environment("MIN_JOB_COUNT", 1_000),
-        help="Reject feeds with fewer valid unique jobs.",
-    )
-    parser.add_argument(
-        "--max-job-count",
-        type=int,
-        default=_integer_environment("MAX_JOB_COUNT", 100_000),
-        help="Reject unexpectedly oversized normalized feeds.",
-    )
-    parser.add_argument(
-        "--max-feed-age-hours",
-        type=float,
-        default=_float_environment("MAX_FEED_AGE_HOURS", 36),
-        help="Reject downloaded Drive feeds older than this many hours.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         default=_boolean_environment("DRY_RUN"),
@@ -119,10 +101,7 @@ def _load_feed(args: argparse.Namespace) -> tuple[list[object], Path, dict[str, 
             raise FileNotFoundError(f"JOB_DATA_FILE does not exist: {path}")
         logger.info("Using configured job feed: %s", path)
     else:
-        path, metadata = download_latest_job_file(
-            args.download_path,
-            max_age_hours=args.max_feed_age_hours,
-        )
+        path, metadata = download_latest_job_file(args.download_path)
         logger.info(
             "Downloaded %s from Google Drive (file id %s, modified %s)",
             metadata.get("name", path.name),
@@ -151,11 +130,7 @@ def _run_id(metadata: dict[str, Any], configured_run_id: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     records, path, metadata = _load_feed(args)
-    jobs, report = prepare_jobs(
-        records,
-        min_job_count=args.min_job_count,
-        max_job_count=args.max_job_count,
-    )
+    jobs, report = prepare_jobs(records)
 
     logger.info(
         "Validated feed %s: %d records, %d unique jobs, %d rejected, %d duplicates, %.2f MiB normalized",
