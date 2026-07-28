@@ -84,7 +84,7 @@ class OracleImportTests(unittest.TestCase):
         replacement["Job_Title"] = "Senior Engineer"
         rejected = {"reject_reason": "HTTP 410"}
 
-        jobs, report = prepare_jobs([first, rejected, replacement], min_job_count=1)
+        jobs, report = prepare_jobs([first, rejected, replacement])
 
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["Job_Title"], "Senior Engineer")
@@ -95,14 +95,15 @@ class OracleImportTests(unittest.TestCase):
         self.assertEqual(report.rejection_reasons, {"scraper_rejected": 1})
         self.assertGreater(report.normalized_bytes, 0)
 
-    def test_prepare_jobs_rejects_incomplete_feed(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Refusing incomplete feed"):
-            prepare_jobs([valid_job()], min_job_count=2)
+    def test_prepare_jobs_has_no_feed_count_limits(self) -> None:
+        empty_jobs, empty_report = prepare_jobs([])
+        self.assertEqual(empty_jobs, [])
+        self.assertEqual(empty_report.accepted_jobs, 0)
 
-    def test_prepare_jobs_rejects_oversized_feed(self) -> None:
-        jobs = [valid_job(f"https://join.com/companies/acme/{index}") for index in range(3)]
-        with self.assertRaisesRegex(ValueError, "Refusing oversized feed"):
-            prepare_jobs(jobs, min_job_count=1, max_job_count=2)
+        records = [valid_job(f"https://join.com/companies/acme/{index}") for index in range(3)]
+        jobs, report = prepare_jobs(records)
+        self.assertEqual(len(jobs), 3)
+        self.assertEqual(report.accepted_jobs, 3)
 
     def test_build_batches_honors_job_limit(self) -> None:
         jobs = [valid_job(f"https://join.com/companies/acme/{index}") for index in range(3)]

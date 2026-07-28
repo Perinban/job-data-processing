@@ -90,19 +90,14 @@ jobs:
           ORACLE_USER: ${{ vars.ORACLE_USER }}
           ORACLE_STAGING_PORT: ${{ vars.ORACLE_STAGING_PORT }}
           TALENTBLISS_API_URL: ${{ vars.TALENTBLISS_API_URL }}
-          MIN_JOB_COUNT: ${{ vars.MIN_JOB_COUNT }}
         run: |
           set -euo pipefail
-          for name in GOOGLE_API_KEY GDRIVE_FOLDER_ID PIPELINE_IMPORT_TOKEN MIN_JOB_COUNT; do
+          for name in GOOGLE_API_KEY GDRIVE_FOLDER_ID PIPELINE_IMPORT_TOKEN; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::${name} is not configured"
               exit 1
             fi
           done
-          if ! [[ "$MIN_JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::MIN_JOB_COUNT must be a positive integer"
-            exit 1
-          fi
           if [[ "$USE_ORACLE_SSH_TUNNEL" == "true" ]]; then
             for name in ORACLE_SSH_PRIVATE_KEY DEPLOY_KNOWN_HOSTS ORACLE_HOST ORACLE_USER ORACLE_STAGING_PORT; do
               if [[ -z "${!name:-}" ]]; then
@@ -170,8 +165,6 @@ jobs:
           GDRIVE_FILE_NAME: job_summary.json
           PIPELINE_IMPORT_TOKEN: ${{ secrets.PIPELINE_IMPORT_TOKEN }}
           TALENTBLISS_SOURCE: join
-          MIN_JOB_COUNT: ${{ vars.MIN_JOB_COUNT }}
-          MAX_FEED_AGE_HOURS: "36"
           IMPORT_TIMEOUT_SECONDS: "600"
           IMPORT_BATCH_SIZE: "250"
           IMPORT_BATCH_MAX_BYTES: "8388608"

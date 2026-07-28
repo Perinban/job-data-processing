@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,24 +40,6 @@ def find_latest_job_file() -> dict[str, Any]:
     return files[0]
 
 
-def validate_feed_freshness(metadata: dict[str, Any], max_age_hours: float) -> None:
-    if max_age_hours <= 0:
-        raise ValueError("max_age_hours must be greater than zero")
-    modified_time = str(metadata.get("modifiedTime", "")).strip()
-    if not modified_time:
-        raise ValueError("Google Drive metadata did not include modifiedTime")
-    modified = datetime.fromisoformat(modified_time.replace("Z", "+00:00"))
-    if modified.tzinfo is None:
-        modified = modified.replace(tzinfo=timezone.utc)
-    age_hours = (datetime.now(timezone.utc) - modified.astimezone(timezone.utc)).total_seconds() / 3600
-    if age_hours < -1:
-        raise ValueError(f"Google Drive feed modifiedTime is unexpectedly in the future: {modified_time}")
-    if age_hours > max_age_hours:
-        raise ValueError(
-            f"Refusing stale Google Drive feed: modified {age_hours:.1f} hours ago; maximum is {max_age_hours:.1f}"
-        )
-
-
 def _md5(path: Path) -> str:
     digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as handle:
@@ -69,12 +50,8 @@ def _md5(path: Path) -> str:
 
 def download_latest_job_file(
     output_file: str | Path = "job_data.json",
-    *,
-    max_age_hours: float | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     metadata = find_latest_job_file()
-    if max_age_hours is not None:
-        validate_feed_freshness(metadata, max_age_hours)
 
     destination = Path(output_file).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
