@@ -79,16 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-request read timeout for the TalentBliss API.",
     )
     parser.add_argument(
-        "--batch-size",
+        "--batch-target-bytes",
         type=int,
-        default=_integer_environment("IMPORT_BATCH_SIZE", 250),
-        help="Maximum jobs per API batch.",
-    )
-    parser.add_argument(
-        "--batch-max-bytes",
-        type=int,
-        default=_integer_environment("IMPORT_BATCH_MAX_BYTES", 8 * 1024 * 1024),
-        help="Maximum uncompressed JSON bytes per API batch.",
+        default=_integer_environment("IMPORT_BATCH_TARGET_BYTES", 20 * 1024 * 1024),
+        help="Target uncompressed JSON bytes per API request; the complete feed is always processed.",
     )
     return parser
 
@@ -156,8 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=_run_id(metadata, args.run_id),
         run_attempt=args.run_attempt,
         timeout=args.timeout_seconds,
-        batch_size=args.batch_size,
-        batch_max_bytes=args.batch_max_bytes,
+        batch_target_bytes=args.batch_target_bytes,
     )
     run = result.get("run", {})
     logger.info(

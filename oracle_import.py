@@ -136,26 +136,19 @@ def prepare_jobs(records: Iterable[Any]) -> tuple[list[dict[str, Any]], FeedRepo
 def build_batches(
     jobs: list[dict[str, Any]],
     *,
-    max_jobs: int = 250,
-    max_bytes: int = 8 * 1024 * 1024,
+    target_bytes: int = 20 * 1024 * 1024,
 ) -> list[list[dict[str, Any]]]:
-    if max_jobs < 1:
-        raise ValueError("max_jobs must be at least 1")
-    if max_bytes < 1_024:
-        raise ValueError("max_bytes must be at least 1024")
-
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_bytes = 2
 
     for job in jobs:
         job_bytes = len(_json_bytes(job)) + (1 if current else 0)
-        if job_bytes + 2 > max_bytes:
-            raise ValueError(f"One job exceeds the maximum batch size: {job.get('Job_URL', 'unknown')}")
-        if current and (len(current) >= max_jobs or current_bytes + job_bytes > max_bytes):
+        if current and current_bytes + job_bytes > target_bytes:
             batches.append(current)
             current = []
             current_bytes = 2
+            job_bytes = len(_json_bytes(job))
         current.append(job)
         current_bytes += job_bytes
 
@@ -239,8 +232,7 @@ def publish_jobs(
     run_id: str,
     run_attempt: str = "1",
     timeout: float = 300,
-    batch_size: int = 250,
-    batch_max_bytes: int = 8 * 1024 * 1024,
+    batch_target_bytes: int = 20 * 1024 * 1024,
 ) -> dict[str, Any]:
     base_url = api_url.strip().rstrip("/")
     import_token = token.strip()
@@ -255,7 +247,7 @@ def publish_jobs(
     if not jobs:
         raise ValueError("Cannot publish an empty job feed")
 
-    batches = build_batches(jobs, max_jobs=batch_size, max_bytes=batch_max_bytes)
+    batches = build_batches(jobs, target_bytes=batch_target_bytes)
     session = _session()
     batch_results: list[dict[str, Any]] = []
     try:
