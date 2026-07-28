@@ -77,6 +77,18 @@ class FailingBatchSession(RecordingSession):
         return super().post(url, **kwargs)
 
 
+class FlakyBatchSession(RecordingSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 2
+
+    def post(self, url: str, **kwargs):
+        if url.endswith("/batches") and self.failures_remaining:
+            self.failures_remaining -= 1
+            raise requests.ConnectionError("transient batch failure")
+        return super().post(url, **kwargs)
+
+
 class OracleImportTests(unittest.TestCase):
     def test_prepare_jobs_filters_rejections_and_deduplicates(self) -> None:
         first = valid_job()
@@ -105,11 +117,11 @@ class OracleImportTests(unittest.TestCase):
         self.assertEqual(len(jobs), 3)
         self.assertEqual(report.accepted_jobs, 3)
 
-    def test_build_batches_uses_byte_target_without_count_cap(self) -> None:
-        jobs = [valid_job(str(index)) for index in range(3)]
-        job_bytes = len(json.dumps(jobs[0], ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        batches = build_batches(jobs, target_bytes=(job_bytes * 2) + 3)
-        self.assertEqual([len(batch) for batch in batches], [2, 1])
+    def test_build_batches_caps_each_request_without_limiting_total_feed(self) -> None:
+        jobs = [valid_job(str(index)) for index in range(7)]
+        batches = build_batches(jobs, target_bytes=100_000, max_jobs=3)
+        self.assertEqual([len(batch) for batch in batches], [3, 3, 1])
+        self.assertEqual(sum(len(batch) for batch in batches), len(jobs))
 
     def test_publish_jobs_checks_health_then_finalizes(self) -> None:
         jobs = [
@@ -125,7 +137,8 @@ class OracleImportTests(unittest.TestCase):
                 token="secret-token",
                 run_id="42",
                 run_attempt="1",
-                batch_target_bytes=len(json.dumps(jobs[0], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 2,
+                batch_target_bytes=100_000,
+                batch_max_jobs=1,
             )
 
         self.assertEqual(result["run"]["inserted_count"], 2)
@@ -151,15 +164,29 @@ class OracleImportTests(unittest.TestCase):
         self.assertEqual(final_payload["batchCount"], 2)
         self.assertEqual(final_payload["runId"], "42")
 
+    def test_publish_jobs_retries_transient_batch_failure(self) -> None:
+        session = FlakyBatchSession()
+        with patch("oracle_import._session", return_value=session), patch("oracle_import.time.sleep") as sleep:
+            result = publish_jobs(
+                [valid_job("first"), valid_job("second")],
+                api_url="https://talent.example",
+                token="secret-token",
+                run_id="retryable-run",
+                batch_retry_attempts=3,
+            )
+        self.assertEqual(result["run"]["discovered_count"], 2)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_publish_jobs_does_not_finalize_after_batch_failure(self) -> None:
         session = FailingBatchSession()
-        with patch("oracle_import._session", return_value=session):
+        with patch("oracle_import._session", return_value=session), patch("oracle_import.time.sleep"):
             with self.assertRaisesRegex(RuntimeError, "Import failed at batch 1/1"):
                 publish_jobs(
                     [valid_job()],
                     api_url="https://talent.example",
                     token="secret-token",
                     run_id="43",
+                    batch_retry_attempts=2,
                 )
         self.assertTrue(session.closed)
         self.assertFalse(any(url.endswith("/finalize") for _, url, _ in session.calls))

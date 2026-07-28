@@ -167,8 +167,9 @@ jobs:
           TALENTBLISS_SOURCE: join
           IMPORT_TIMEOUT_SECONDS: "600"
           IMPORT_BATCH_TARGET_BYTES: "20971520"
-          IMPORT_RUN_ID: ${{ github.run_id }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          IMPORT_BATCH_MAX_JOBS: "5000"
+          IMPORT_BATCH_RETRY_ATTEMPTS: "8"
+          IMPORT_RUN_ATTEMPT: "1"
         run: python main.py
 
       - name: Stop SSH tunnel

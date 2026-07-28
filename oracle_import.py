@@ -3,14 +3,14 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import time
 from collections import Counter
 from dataclasses import dataclass
+from queue import SimpleQueue
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 
 logger = logging.getLogger("job-data-processing.import")
@@ -24,6 +24,12 @@ class FeedReport:
     duplicate_urls: int
     rejection_reasons: dict[str, int]
     normalized_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class BatchTask:
+    index: int
+    jobs: list[dict[str, Any]]
 
 
 def _text(value: Any) -> str | None:
@@ -137,14 +143,18 @@ def build_batches(
     jobs: list[dict[str, Any]],
     *,
     target_bytes: int = 20 * 1024 * 1024,
+    max_jobs: int = 5_000,
 ) -> list[list[dict[str, Any]]]:
+    if max_jobs < 1:
+        raise ValueError("max_jobs must be at least 1")
+
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_bytes = 2
 
     for job in jobs:
         job_bytes = len(_json_bytes(job)) + (1 if current else 0)
-        if current and current_bytes + job_bytes > target_bytes:
+        if current and (len(current) >= max_jobs or current_bytes + job_bytes > target_bytes):
             batches.append(current)
             current = []
             current_bytes = 2
@@ -158,24 +168,17 @@ def build_batches(
 
 
 def _session() -> requests.Session:
-    retries = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
-        backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET", "POST"}),
-        raise_on_status=False,
-    )
-    session = requests.Session()
-    session.mount("http://", HTTPAdapter(max_retries=retries))
-    session.mount("https://", HTTPAdapter(max_retries=retries))
-    return session
+    return requests.Session()
 
 
 def _response_json(response: requests.Response, description: str) -> dict[str, Any]:
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        detail = response.text.strip()[:2_000]
+        if detail:
+            error.add_note(f"TalentBliss response: {detail}")
+        raise
     result = response.json()
     if not isinstance(result, dict):
         raise ValueError(f"TalentBliss returned an invalid {description} response")
@@ -212,6 +215,47 @@ def _post_gzip_json(
     return _response_json(response, "import")
 
 
+def _is_retryable_request_error(error: requests.RequestException) -> bool:
+    if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        return error.response.status_code == 429 or error.response.status_code >= 500
+    return False
+
+
+def _post_with_retries(
+    session: requests.Session,
+    url: str,
+    payload: dict[str, Any],
+    token: str,
+    timeout: float,
+    *,
+    attempts: int,
+    description: str,
+) -> dict[str, Any]:
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return _post_gzip_json(session, url, payload, token, timeout)
+        except requests.RequestException as error:
+            if attempt == attempts or not _is_retryable_request_error(error):
+                raise
+            delay_seconds = min(30, 2 ** (attempt - 1))
+            logger.warning(
+                "%s failed on attempt %d/%d; retrying in %d seconds: %s",
+                description,
+                attempt,
+                attempts,
+                delay_seconds,
+                error,
+            )
+            time.sleep(delay_seconds)
+
+    raise AssertionError("unreachable")
+
+
 def _validate_batch_response(result: dict[str, Any], expected_jobs: int, batch_index: int) -> None:
     batch = result.get("batch")
     if not isinstance(batch, dict):
@@ -233,6 +277,8 @@ def publish_jobs(
     run_attempt: str = "1",
     timeout: float = 300,
     batch_target_bytes: int = 20 * 1024 * 1024,
+    batch_max_jobs: int = 5_000,
+    batch_retry_attempts: int = 8,
 ) -> dict[str, Any]:
     base_url = api_url.strip().rstrip("/")
     import_token = token.strip()
@@ -247,39 +293,60 @@ def publish_jobs(
     if not jobs:
         raise ValueError("Cannot publish an empty job feed")
 
-    batches = build_batches(jobs, target_bytes=batch_target_bytes)
+    batches = build_batches(jobs, target_bytes=batch_target_bytes, max_jobs=batch_max_jobs)
+    batch_queue: SimpleQueue[BatchTask | None] = SimpleQueue()
+    for index, batch in enumerate(batches):
+        batch_queue.put(BatchTask(index=index, jobs=batch))
+    batch_queue.put(None)
+
     session = _session()
     batch_results: list[dict[str, Any]] = []
     try:
         check_api_health(session, base_url, timeout)
         logger.info("TalentBliss API health check passed")
+        logger.info(
+            "Queued %d batches for producer-consumer import (%d jobs, max %d jobs per request)",
+            len(batches),
+            len(jobs),
+            batch_max_jobs,
+        )
 
-        for index, batch in enumerate(batches):
-            if index == 0 or (index + 1) % 10 == 0 or index + 1 == len(batches):
-                logger.info("Publishing batch %d/%d (%d jobs)", index + 1, len(batches), len(batch))
+        while True:
+            task = batch_queue.get()
+            if task is None:
+                break
+            if task.index == 0 or (task.index + 1) % 10 == 0 or task.index + 1 == len(batches):
+                logger.info(
+                    "Publishing batch %d/%d (%d jobs)",
+                    task.index + 1,
+                    len(batches),
+                    len(task.jobs),
+                )
             try:
-                result = _post_gzip_json(
+                result = _post_with_retries(
                     session,
                     f"{base_url}/api/internal/imports/jobs/batches",
                     {
                         "source": source,
                         "runId": external_run_id,
                         "runAttempt": external_run_attempt,
-                        "batchIndex": index,
+                        "batchIndex": task.index,
                         "batchCount": len(batches),
-                        "jobs": batch,
+                        "jobs": task.jobs,
                     },
                     import_token,
                     timeout,
+                    attempts=batch_retry_attempts,
+                    description=f"Batch {task.index + 1}/{len(batches)}",
                 )
-                _validate_batch_response(result, len(batch), index)
+                _validate_batch_response(result, len(task.jobs), task.index)
                 batch_results.append(result)
             except Exception as error:
-                raise RuntimeError(f"Import failed at batch {index + 1}/{len(batches)}") from error
+                raise RuntimeError(f"Import failed at batch {task.index + 1}/{len(batches)}") from error
 
         logger.info("Finalizing %d completed batches", len(batches))
         try:
-            finalized = _post_gzip_json(
+            finalized = _post_with_retries(
                 session,
                 f"{base_url}/api/internal/imports/jobs/finalize",
                 {
@@ -290,6 +357,8 @@ def publish_jobs(
                 },
                 import_token,
                 timeout,
+                attempts=batch_retry_attempts,
+                description="Import finalization",
             )
         except Exception as error:
             raise RuntimeError("All batches were uploaded, but import finalization failed") from error
