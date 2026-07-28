@@ -21,6 +21,8 @@ The loader fails before finalization when:
 
 Jobs missing from the new feed are only deleted by the TalentBliss finalize endpoint after every expected batch has completed. A partial upload cannot finalize and therefore cannot delete the existing job set.
 
+Imports are grouped by a byte target rather than a fixed job-count cap, reducing API round trips while still processing the entire feed. An unusually large individual job is sent in its own request instead of being rejected.
+
 ## Required GitHub configuration
 
 Repository secrets:

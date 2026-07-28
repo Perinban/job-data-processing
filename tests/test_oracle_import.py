@@ -105,9 +105,10 @@ class OracleImportTests(unittest.TestCase):
         self.assertEqual(len(jobs), 3)
         self.assertEqual(report.accepted_jobs, 3)
 
-    def test_build_batches_honors_job_limit(self) -> None:
-        jobs = [valid_job(f"https://join.com/companies/acme/{index}") for index in range(3)]
-        batches = build_batches(jobs, max_jobs=2, max_bytes=100_000)
+    def test_build_batches_uses_byte_target_without_count_cap(self) -> None:
+        jobs = [valid_job(str(index)) for index in range(3)]
+        job_bytes = len(json.dumps(jobs[0], ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        batches = build_batches(jobs, target_bytes=(job_bytes * 2) + 3)
         self.assertEqual([len(batch) for batch in batches], [2, 1])
 
     def test_publish_jobs_checks_health_then_finalizes(self) -> None:
@@ -124,7 +125,7 @@ class OracleImportTests(unittest.TestCase):
                 token="secret-token",
                 run_id="42",
                 run_attempt="1",
-                batch_size=1,
+                batch_target_bytes=len(json.dumps(jobs[0], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 2,
             )
 
         self.assertEqual(result["run"]["inserted_count"], 2)

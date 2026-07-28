@@ -166,8 +166,7 @@ jobs:
           PIPELINE_IMPORT_TOKEN: ${{ secrets.PIPELINE_IMPORT_TOKEN }}
           TALENTBLISS_SOURCE: join
           IMPORT_TIMEOUT_SECONDS: "600"
-          IMPORT_BATCH_SIZE: "250"
-          IMPORT_BATCH_MAX_BYTES: "8388608"
+          IMPORT_BATCH_TARGET_BYTES: "20971520"
           IMPORT_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: python main.py
